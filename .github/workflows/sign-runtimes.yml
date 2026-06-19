@@ -19,37 +19,56 @@ jobs:
       - name: Download, sign, and repackage runtimes
         run: |
           mkdir -p output
+          
+          # Parse the input correctly
           IFS=',' read -ra PAIRS <<< "${{ github.event.inputs.runtimes }}"
+          
           for pair in "${PAIRS[@]}"; do
-            name="${pair%%=*}"
-            url="${pair#*=}"
-            echo "Processing $name from $url"
-
-            mkdir -p "work/$name"
+            # Remove leading/trailing whitespace
+            pair="${pair#"${pair%%[![:space:]]*}"}"
+            pair="${pair%"${pair##*[![:space:]]}"}"
+            
+            # Split by = carefully
+            name=$(echo "$pair" | cut -d'=' -f1 | xargs)
+            url=$(echo "$pair" | cut -d'=' -f2- | xargs)
+            
+            echo "Processing: name=$name url=$url"
+            
             filename=$(basename "$url")
+            echo "Downloading to: work/$filename"
+            
+            mkdir -p work
             curl -L -o "work/$filename" "$url"
-
-            cd "work"
+            
+            echo "Extracting..."
+            cd work
             tar -xf "$filename"
             cd ..
-
-            # Find the actual extracted folder (usually java-X-openjdk*)
+            
+            # Find the extracted folder
             extracted_dir=$(find "work" -maxdepth 1 -type d -name "java-*" | head -n1)
             if [ -z "$extracted_dir" ]; then
-              extracted_dir="work"
+              extracted_dir=$(find "work" -maxdepth 1 -type d ! -name "work" | head -n1)
             fi
-
-            echo "Signing binaries in $extracted_dir"
-            find "$extracted_dir" -type f \( -name "*.dylib" -o -name "java" -o -name "javac" -o -perm +111 \) -print0 | while IFS= read -r -d '' file; do
-              if file "$file" | grep -q "Mach-O"; then
-                echo "Signing: $file"
-                ldid -S "$file" || echo "Failed to sign $file, continuing"
-              fi
+            
+            if [ -z "$extracted_dir" ]; then
+              echo "Error: Could not find extracted directory"
+              exit 1
+            fi
+            
+            echo "Found extracted dir: $extracted_dir"
+            echo "Signing binaries..."
+            
+            find "$extracted_dir" -type f \( -name "*.dylib" -o -name "java" -o -name "javac" \) -exec file {} \; | grep "Mach-O" | cut -d: -f1 | while read file; do
+              echo "Signing: $file"
+              ldid -S "$file" || echo "Warning: Failed to sign $file"
             done
-
-            echo "Repackaging $name"
+            
+            echo "Repackaging as $name-signed.tar.xz"
             base_name=$(basename "$extracted_dir")
             tar -cJf "output/$name-signed.tar.xz" -C "work" "$base_name"
+            
+            rm -rf work
           done
 
       - name: List output
