@@ -26,16 +26,17 @@ jobs:
             echo "Processing $name from $url"
 
             mkdir -p "work/$name"
-            curl -L -o "work/$name.tar.xz" "$url"
+            filename=$(basename "$url")
+            curl -L -o "work/$filename" "$url"
 
-            cd "work/$name"
-            tar xf "../$name.tar.xz"
-            cd ../..
+            cd "work"
+            tar -xf "$filename"
+            cd ..
 
             # Find the actual extracted folder (usually java-X-openjdk*)
-            extracted_dir=$(find "work/$name" -maxdepth 1 -type d -name "java-*" | head -n1)
+            extracted_dir=$(find "work" -maxdepth 1 -type d -name "java-*" | head -n1)
             if [ -z "$extracted_dir" ]; then
-              extracted_dir="work/$name"
+              extracted_dir="work"
             fi
 
             echo "Signing binaries in $extracted_dir"
@@ -47,10 +48,8 @@ jobs:
             done
 
             echo "Repackaging $name"
-            cd "$extracted_dir/.."
             base_name=$(basename "$extracted_dir")
-            tar -cJf "../../../output/$name-signed.tar.xz" "$base_name"
-            cd - > /dev/null
+            tar -cJf "output/$name-signed.tar.xz" -C "work" "$base_name"
           done
 
       - name: List output
