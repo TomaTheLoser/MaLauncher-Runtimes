@@ -18,7 +18,7 @@ jobs:
 
       - name: Download, sign, and repackage runtimes
         run: |
-          mkdir -p output
+          mkdir -p output work
           
           # Parse the input correctly
           IFS=',' read -ra PAIRS <<< "${{ github.event.inputs.runtimes }}"
@@ -32,43 +32,53 @@ jobs:
             name=$(echo "$pair" | cut -d'=' -f1 | xargs)
             url=$(echo "$pair" | cut -d'=' -f2- | xargs)
             
-            echo "Processing: name=$name url=$url"
+            echo "Processing: name=$name"
+            echo "URL: $url"
             
             filename=$(basename "$url")
-            echo "Downloading to: work/$filename"
+            archive_path="work/$filename"
             
-            mkdir -p work
-            curl -L -o "work/$filename" "$url"
+            echo "Downloading to: $archive_path"
+            curl -L -o "$archive_path" "$url"
             
-            echo "Extracting..."
-            cd work
-            tar -xf "$filename"
-            cd ..
+            echo "Archive size: $(du -h $archive_path)"
             
-            # Find the extracted folder
-            extracted_dir=$(find "work" -maxdepth 1 -type d -name "java-*" | head -n1)
-            if [ -z "$extracted_dir" ]; then
-              extracted_dir=$(find "work" -maxdepth 1 -type d ! -name "work" | head -n1)
+            # Extract to work directory
+            echo "Extracting full archive..."
+            mkdir -p "work/extract_$name"
+            tar -xJf "$archive_path" -C "work/extract_$name"
+            
+            # Find the JRE/JDK root (could be java-*, jre, etc)
+            jre_root=$(find "work/extract_$name" -maxdepth 2 -type d \( -name "java-*" -o -name "jre*" -o -name "jdk*" \) | head -n1)
+            
+            if [ -z "$jre_root" ]; then
+              jre_root=$(ls -d work/extract_$name/*/ | head -n1)
             fi
             
-            if [ -z "$extracted_dir" ]; then
-              echo "Error: Could not find extracted directory"
-              exit 1
+            if [ -z "$jre_root" ]; then
+              jre_root="work/extract_$name"
             fi
             
-            echo "Found extracted dir: $extracted_dir"
-            echo "Signing binaries..."
+            echo "JRE root: $jre_root"
+            echo "JRE root size: $(du -sh $jre_root)"
             
-            find "$extracted_dir" -type f \( -name "*.dylib" -o -name "java" -o -name "javac" \) -exec file {} \; | grep "Mach-O" | cut -d: -f1 | while read file; do
-              echo "Signing: $file"
-              ldid -S "$file" || echo "Warning: Failed to sign $file"
+            # Sign ALL executable files and libraries
+            echo "Signing all binaries and libraries..."
+            find "$jre_root" -type f \( -executable -o -name "*.dylib" -o -name "*.so" \) | while read file; do
+              if file "$file" | grep -q "Mach-O"; then
+                echo "Signing: $file"
+                ldid -S "$file" 2>/dev/null || true
+              fi
             done
             
-            echo "Repackaging as $name-signed.tar.xz"
-            base_name=$(basename "$extracted_dir")
-            tar -cJf "output/$name-signed.tar.xz" -C "work" "$base_name"
+            echo "Repackaging as $name-signed.tar.xz..."
+            base_name=$(basename "$jre_root")
+            tar -cJf "output/$name-signed.tar.xz" -C "$(dirname $jre_root)" "$base_name"
             
-            rm -rf work
+            echo "Output size: $(du -h output/$name-signed.tar.xz)"
+            
+            # Cleanup
+            rm -rf "work/extract_$name"
           done
 
       - name: List output
